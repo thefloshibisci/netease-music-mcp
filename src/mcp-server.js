@@ -1,0 +1,297 @@
+import { McpServer } from '@modelcontextprotocol/server';
+import * as z from 'zod/v4';
+
+import {
+  controlPlayback,
+  getClientStatus,
+  getListenTogetherCapabilities,
+  getLyrics,
+  getSongDetails,
+  launchClient,
+  nextTrackDirect,
+  openClientArea,
+  openEntity,
+  openListenTogetherInvite,
+  searchSongs,
+} from './netease.js';
+import {
+  addSongsToPlaylist,
+  createPlaylist,
+  getPlaylistAuthStatus,
+  listOwnPlaylists,
+  removeSongsFromPlaylist,
+} from './playlist.js';
+
+function success(data) {
+  return {
+    content: [{ type: 'text', text: JSON.stringify(data, null, 2) }],
+  };
+}
+
+function failure(error) {
+  return {
+    content: [
+      {
+        type: 'text',
+        text: error instanceof Error ? error.message : String(error),
+      },
+    ],
+    isError: true,
+  };
+}
+
+async function handle(operation) {
+  try {
+    return success(await operation());
+  } catch (error) {
+    return failure(error);
+  }
+}
+
+export function createNeteaseMcpServer() {
+  const server = new McpServer(
+    {
+      name: 'netease-music-mcp',
+      version: '0.5.0',
+    },
+    {
+      instructions:
+        '跨平台网易云音乐 MCP。搜索、详情、歌词和歌单账号能力可在桌面、服务器或移动 MCP 客户端使用；本地播放器控制取决于设备适配器。打开页面或控制播放前应获得用户明确意图。歌单写工具只能在用户明确确认本次修改后调用，并必须传 confirm=true。不得用于下载音频、绕过会员或版权限制。',
+    },
+  );
+
+  server.registerTool(
+    'netease_playlist_auth_status',
+    {
+      title: '网易云歌单账号能力状态',
+      description: '只检查账号写入功能是否已启用、是否配置会话文件；不返回任何 Cookie 值。',
+      inputSchema: z.object({}),
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async () => handle(getPlaylistAuthStatus),
+  );
+
+  server.registerTool(
+    'netease_playlist_list',
+    {
+      title: '列出我创建的网易云歌单',
+      description: '使用本机登录会话列出当前账号拥有的歌单，供后续添加或移除歌曲。',
+      inputSchema: z.object({}),
+      annotations: { readOnlyHint: true, openWorldHint: true },
+    },
+    async () => handle(listOwnPlaylists),
+  );
+
+  server.registerTool(
+    'netease_playlist_create',
+    {
+      title: '创建网易云歌单',
+      description: '在当前登录账号下创建公开或隐私歌单。必须在用户明确确认本次创建后调用。',
+      inputSchema: z.object({
+        name: z.string().min(1).max(40),
+        isPrivate: z.boolean().default(false),
+        confirm: z.literal(true).describe('用户已明确确认创建这个歌单'),
+      }),
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: true,
+      },
+    },
+    async ({ name, isPrivate }) => handle(() => createPlaylist(name, isPrivate)),
+  );
+
+  server.registerTool(
+    'netease_playlist_add_songs',
+    {
+      title: '添加歌曲到网易云歌单',
+      description: '将 1–100 首歌曲加入当前账号拥有的指定歌单；修改前会再次校验歌单归属。',
+      inputSchema: z.object({
+        playlistId: z.string().regex(/^\d{1,20}$/),
+        songIds: z.array(z.string().regex(/^\d{1,20}$/)).min(1).max(100),
+        confirm: z.literal(true).describe('用户已明确确认添加这些歌曲'),
+      }),
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: true,
+      },
+    },
+    async ({ playlistId, songIds }) =>
+      handle(() => addSongsToPlaylist(playlistId, songIds)),
+  );
+
+  server.registerTool(
+    'netease_playlist_remove_songs',
+    {
+      title: '从网易云歌单移除歌曲',
+      description: '从当前账号拥有的指定歌单移除 1–100 首歌曲；必须明确确认，且会校验歌单归属。',
+      inputSchema: z.object({
+        playlistId: z.string().regex(/^\d{1,20}$/),
+        songIds: z.array(z.string().regex(/^\d{1,20}$/)).min(1).max(100),
+        confirm: z.literal(true).describe('用户已明确确认移除这些歌曲'),
+      }),
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: false,
+        openWorldHint: true,
+      },
+    },
+    async ({ playlistId, songIds }) =>
+      handle(() => removeSongsFromPlaylist(playlistId, songIds)),
+  );
+
+  server.registerTool(
+    'netease_status',
+    {
+      title: '网易云客户端状态',
+      description: '检查当前运行平台、远程能力和可用的本地播放器适配器；macOS 还会读取客户端状态。',
+      inputSchema: z.object({}),
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async () => handle(getClientStatus),
+  );
+
+  server.registerTool(
+    'netease_search',
+    {
+      title: '搜索网易云歌曲',
+      description: '通过 music.163.com 的匿名只读接口搜索歌曲，不读取账号 Cookie。',
+      inputSchema: z.object({
+        query: z.string().min(1).max(100).describe('歌曲、歌手或关键词'),
+        limit: z.number().int().min(1).max(20).default(10),
+        offset: z.number().int().min(0).max(10_000).default(0),
+      }),
+      annotations: { readOnlyHint: true, openWorldHint: true },
+    },
+    async ({ query, limit, offset }) => handle(() => searchSongs(query, limit, offset)),
+  );
+
+  server.registerTool(
+    'netease_song_detail',
+    {
+      title: '读取网易云歌曲详情',
+      description: '按网易云歌曲 ID 读取名称、歌手、专辑、时长和官方页面链接。',
+      inputSchema: z.object({
+        songIds: z.array(z.string().regex(/^\d{1,20}$/)).min(1).max(20),
+      }),
+      annotations: { readOnlyHint: true, openWorldHint: true },
+    },
+    async ({ songIds }) => handle(() => getSongDetails(songIds)),
+  );
+
+  server.registerTool(
+    'netease_lyrics',
+    {
+      title: '读取网易云歌词',
+      description: '按歌曲 ID 读取 LRC、翻译和罗马音歌词；不下载音频。',
+      inputSchema: z.object({
+        songId: z.string().regex(/^\d{1,20}$/),
+      }),
+      annotations: { readOnlyHint: true, openWorldHint: true },
+    },
+    async ({ songId }) => handle(() => getLyrics(songId)),
+  );
+
+  server.registerTool(
+    'netease_launch',
+    {
+      title: '启动网易云音乐（macOS）',
+      description: '通过 macOS 适配器启动已安装的官方网易云音乐客户端；其他平台会返回清晰的能力错误。',
+      inputSchema: z.object({}),
+      annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+    },
+    async () => handle(launchClient),
+  );
+
+  server.registerTool(
+    'netease_open_entity',
+    {
+      title: '在网易云打开资源',
+      description: '通过 macOS 适配器在官方客户端中打开歌曲、歌单、专辑或歌手页面。',
+      inputSchema: z.object({
+        type: z.enum(['song', 'playlist', 'album', 'artist']),
+        id: z.string().regex(/^\d{1,20}$/),
+      }),
+      annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+    },
+    async ({ type, id }) => handle(() => openEntity(type, id)),
+  );
+
+  server.registerTool(
+    'netease_open_area',
+    {
+      title: '打开网易云功能页',
+      description: '打开私人 FM、下载管理或听歌识曲。只允许预设的 orpheus:// 路由。',
+      inputSchema: z.object({
+        area: z.enum(['private_fm', 'downloads', 'recognize']),
+      }),
+      annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+    },
+    async ({ area }) => handle(() => openClientArea(area)),
+  );
+
+  server.registerTool(
+    'netease_listen_together_capabilities',
+    {
+      title: '检查一起听能力',
+      description:
+        '检查当前设备的一起听能力。macOS 适配器可打开邀请；互动能力取决于网易云官方移动端。',
+      inputSchema: z.object({}),
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async () => handle(getListenTogetherCapabilities),
+  );
+
+  server.registerTool(
+    'netease_listen_together_invite',
+    {
+      title: '邀请好友一起听',
+      description:
+        '通过 macOS 适配器打开“一起听”邀请界面。调用前必须确认用户明确希望发起邀请；好友或分享方式由用户在客户端中选择。',
+      inputSchema: z.object({}),
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: true,
+      },
+    },
+    async () => handle(openListenTogetherInvite),
+  );
+
+  server.registerTool(
+    'netease_next_track',
+    {
+      title: '普通播放下一首',
+      description:
+        '让 macOS 直接向当前网易云播放器发送下一首命令。仅用于普通播放，不操控屏幕，也不用于一起听房间。',
+      inputSchema: z.object({}),
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
+    },
+    async () => handle(nextTrackDirect),
+  );
+
+  server.registerTool(
+    'netease_control',
+    {
+      title: '控制网易云播放',
+      description: '控制官方 Mac 客户端播放/暂停、上一首或下一首，需要 macOS 辅助功能权限。',
+      inputSchema: z.object({
+        action: z.enum(['play_pause', 'previous', 'next']),
+      }),
+      annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+    },
+    async ({ action }) => handle(() => controlPlayback(action)),
+  );
+
+  return server;
+}
