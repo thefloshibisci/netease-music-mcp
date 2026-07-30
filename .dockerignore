@@ -1,9 +1,10 @@
-node_modules/
+.git
+.github
 .env
+node_modules
+coverage
 *.log
 *.secret
 *.session
 auth.json
 master.key
-.DS_Store
-coverage/
