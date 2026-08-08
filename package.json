@@ -5,7 +5,7 @@
   "description": "Privacy-first NetEase Cloud Music MCP for desktop, server and mobile clients",
   "main": "src/server.js",
   "scripts": {
-    "start": "node src/server.js",
+    "start": "node scripts/init-personal-service.js /app/data && node src/personal-server.js",
     "start:http": "node src/http-server.js",
     "start:personal": "node src/personal-server.js",
     "init:personal": "node scripts/init-personal-service.js",
